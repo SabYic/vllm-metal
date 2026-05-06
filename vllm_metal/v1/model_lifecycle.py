@@ -110,7 +110,7 @@ def _mlx_lm_compatible_model_path(model_name: str):
         for src in model_path.iterdir():
             if not src.is_file() or src.name.endswith(".safetensors"):
                 continue
-            (compat_path / src.name).symlink_to(src)
+            (compat_path / src.name).symlink_to(src.resolve())
 
         total_shards = len(shard_names)
         for shard_index, shard_name in enumerate(shard_names, start=1):
@@ -120,7 +120,7 @@ def _mlx_lm_compatible_model_path(model_name: str):
                 if total_shards == 1
                 else f"model-{shard_index:05d}-of-{total_shards:05d}.safetensors"
             )
-            (compat_path / compat_name).symlink_to(shard_path)
+            (compat_path / compat_name).symlink_to(shard_path.resolve())
 
         logger.info(
             "Using mlx_lm shard compatibility view for %s (%d shard files)",

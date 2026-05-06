@@ -559,3 +559,50 @@ class TestMLAPagedAttentionWrapperPagedPath:
         mx.eval(out, expected)
 
         assert bool(mx.allclose(out, expected, rtol=1e-3, atol=1e-3))
+
+    def test_minicpm3_style_continuation_prefill_matches_dense_reference(self) -> None:
+        """Prefix-hit continuation prefill (start_pos > 0) matches dense MLA.
+
+        This mirrors the MLX MLA prefix-cache path: a cached prefix already
+        occupies the first slots, and the wrapper receives only the uncached
+        suffix with a non-zero RoPE/slot offset.
+        """
+        inner = _MiniCPM3StyleInner()
+        cache = self._make_cache()
+        wrapper = MLAPagedAttentionWrapper(inner, layer_idx=0, latent_cache=cache)
+
+        mx.random.seed(23)
+        prefix = mx.random.normal((1, 2, _HIDDEN)).astype(mx.float16)
+        suffix = mx.random.normal((1, 2, _HIDDEN)).astype(mx.float16)
+
+        pac.set_context(
+            pac.PagedAttentionContext(
+                slot_mapping=[0, 1],
+                block_tables=[[0]],
+                context_lens=[2],
+                cu_seqlens=[0, 2],
+                offsets=[0],
+            )
+        )
+        wrapper(prefix, mask=None, cache=None)
+        pac.clear_context()
+
+        pac.set_context(
+            pac.PagedAttentionContext(
+                slot_mapping=[2, 3],
+                block_tables=[[0]],
+                context_lens=[4],
+                cu_seqlens=[0, 2],
+                offsets=[2],
+            )
+        )
+        out = wrapper(suffix, mask=None, cache=None)
+        dense = _minicpm3_dense_reference(
+            inner,
+            mx.concatenate([prefix, suffix], axis=1),
+            cache_dtype=cache.dtype,
+        )
+        expected = dense[:, -2:, :]
+        mx.eval(out, expected)
+
+        assert bool(mx.allclose(out, expected, rtol=1e-3, atol=1e-3))

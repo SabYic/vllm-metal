@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""End-to-end correctness of paged prefix caching (issue #182).
+"""End-to-end correctness of paged prefix caching.
 
 Sends a batch of prompts that share a long prefix (>= one KV block of
-16 tokens) twice through ``vllm.LLM`` with prefix caching enabled.  The
+16 tokens) twice through ``vllm.LLM`` with prefix caching enabled. The
 first ``generate`` populates the cache; the second triggers cache hits
 that walk the model_runner's ``start_pos > 0`` path because the upstream
 scheduler reports ``num_computed_tokens > 0``.
@@ -39,6 +39,10 @@ from tests.test_paged_deterministic import (
     MODEL_NAME,
 )
 
+DEFAULT_MODEL_NAME = MODEL_NAME
+MINICPM3_MODEL_NAME = "mlx-community/MiniCPM3-4B-4bit"
+MINICPM3_MODEL_ENV = "VLLM_METAL_TEST_MINICPM3_MODEL"
+
 # Long shared prefix (~30 tokens — comfortably more than the 16-token
 # Metal block size, so the upstream scheduler hashes at least one block
 # and prefix cache lookups can succeed).
@@ -60,7 +64,12 @@ def _setenv_default(key: str, default: str) -> None:
         os.environ[key] = default
 
 
-def _run_prefix_cache_correctness() -> None:
+def _resolve_minicpm3_model() -> str:
+    """Resolve the MiniCPM3 source, preferring a caller-provided local path."""
+    return os.environ.get(MINICPM3_MODEL_ENV, MINICPM3_MODEL_NAME)
+
+
+def _run_prefix_cache_correctness(model_name: str, trust_remote_code: bool) -> None:
     """Body of the e2e test — runs in a spawned child process."""
     _setenv_default("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
     _setenv_default("VLLM_METAL_USE_PAGED_ATTENTION", DEFAULT_USE_PAGED_ATTENTION)
@@ -85,7 +94,8 @@ def _run_prefix_cache_correctness() -> None:
 
     try:
         llm = LLM(
-            model=MODEL_NAME,
+            model=model_name,
+            trust_remote_code=trust_remote_code,
             max_model_len=512,
             max_num_seqs=1,
             enable_prefix_caching=True,
@@ -126,13 +136,25 @@ def _run_prefix_cache_correctness() -> None:
 
 
 @pytest.mark.slow
-def test_prefix_cache_hit_path_correctness() -> None:
+@pytest.mark.parametrize(
+    ("model_name", "label", "trust_remote_code"),
+    [
+        pytest.param(DEFAULT_MODEL_NAME, "default", False, id="default-model"),
+        pytest.param(_resolve_minicpm3_model(), "mla", True, id="minicpm3-mla"),
+    ],
+)
+def test_prefix_cache_hit_path_correctness(
+    model_name: str, label: str, trust_remote_code: bool
+) -> None:
     ctx = mp.get_context("spawn")
-    proc = ctx.Process(target=_run_prefix_cache_correctness)
+    proc = ctx.Process(
+        target=_run_prefix_cache_correctness,
+        args=(model_name, trust_remote_code),
+    )
     proc.start()
     proc.join()
     if proc.exitcode != 0:
         raise AssertionError(
-            f"Prefix-cache e2e test failed in spawned child "
+            f"Prefix-cache e2e test failed for {label} model in spawned child "
             f"(exit code: {proc.exitcode})"
         )
